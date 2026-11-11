@@ -1,8 +1,11 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import StartGame, { EventBus } from './game/main';
+import { ENDING_NOTE, GLOSSARY } from './game/content/story';
+import { hasSave } from './game/systems/save';
 import {
-    EV, ENDING_NOTE, GLOSSARY,
-    type GamePhase, type DialoguePayload, type ItemPayload, type LocationPayload,
+    EV,
+    type BeginPayload, type GamePhase, type DialoguePayload, type ItemPayload, type LocationPayload,
+    type SpiritPayload, type TouchPayload,
 } from './game/utils';
 
 interface DialogueState {
@@ -70,13 +73,16 @@ export default function App() {
     const [dialogue, setDialogue] = useState<DialogueState | null>(null);
     const [items, setItems] = useState<ItemPayload[]>([]);
     const [spirit, setSpirit] = useState(false);
+    const [spiritUnlocked, setSpiritUnlocked] = useState(false);
+    const [objective, setObjective] = useState('');
+    const [canContinue, setCanContinue] = useState(() => hasSave());
     const [location, setLocation] = useState<LocationPayload | null>(null);
     const [endingNote, setEndingNote] = useState(ENDING_NOTE);
     const [muted, setMuted] = useState(false);
     const [showJournal, setShowJournal] = useState(false);
     const [hint, setHint] = useState<string | null>(null);
-    const [typed, setTyped] = useState('');
-    const touchRef = useRef({ left: false, right: false, jump: false });
+    const [shown, setShown] = useState(0); // characters of the current line revealed
+    const touchRef = useRef<Required<TouchPayload>>({ left: false, right: false, jump: false });
 
     // Mount Phaser exactly once — DO NOT remove this bridge.
     useLayoutEffect(() => {
@@ -99,53 +105,68 @@ export default function App() {
 
     // EventBus subscriptions
     useEffect(() => {
-        const onPhase = (p: GamePhase) => setPhase(p);
+        const onPhase = (p: GamePhase) => {
+            setPhase(p);
+            if (p === 'MENU') setCanContinue(hasSave());
+        };
         const onDialogue = (d: DialoguePayload) => {
             setDialogue({ speaker: d.speaker, avatarKey: d.avatarKey, lines: d.text, index: 0 });
         };
+        const onDialogueStep = (index: number) => setDialogue(d => (d ? { ...d, index } : d));
         const onItem = (it: ItemPayload) => setItems(prev => (prev.some(i => i.id === it.id) ? prev : [...prev, it]));
-        const onSpirit = (payload: { active: boolean; hint?: string }) => {
+        const onSpirit = (payload: SpiritPayload) => {
             setSpirit(payload.active);
+            setSpiritUnlocked(payload.unlocked);
             if (payload.hint) { setHint(payload.hint); window.setTimeout(() => setHint(null), 6000); }
         };
         const onLocation = (loc: LocationPayload) => { setLocation(loc); window.setTimeout(() => setLocation(null), 4200); };
+        const onObjective = (text: string) => setObjective(text);
         const onCompleted = (payload: { endingNote: string }) => setEndingNote(payload.endingNote);
 
-        EventBus.on(EV.PHASE_CHANGED, onPhase);
-        EventBus.on(EV.DIALOGUE_START, onDialogue);
-        EventBus.on(EV.ITEM_COLLECTED, onItem);
-        EventBus.on(EV.SPIRIT_TOGGLED, onSpirit);
-        EventBus.on(EV.LOCATION_ENTERED, onLocation);
-        EventBus.on(EV.GAME_COMPLETED, onCompleted);
-        return () => {
-            EventBus.removeListener(EV.PHASE_CHANGED, onPhase);
-            EventBus.removeListener(EV.DIALOGUE_START, onDialogue);
-            EventBus.removeListener(EV.ITEM_COLLECTED, onItem);
-            EventBus.removeListener(EV.SPIRIT_TOGGLED, onSpirit);
-            EventBus.removeListener(EV.LOCATION_ENTERED, onLocation);
-            EventBus.removeListener(EV.GAME_COMPLETED, onCompleted);
-        };
+        const subs: [string, (...args: any[]) => void][] = [
+            [EV.PHASE_CHANGED, onPhase],
+            [EV.DIALOGUE_START, onDialogue],
+            [EV.DIALOGUE_STEP, onDialogueStep],
+            [EV.ITEM_COLLECTED, onItem],
+            [EV.SPIRIT_TOGGLED, onSpirit],
+            [EV.LOCATION_ENTERED, onLocation],
+            [EV.OBJECTIVE_CHANGED, onObjective],
+            [EV.GAME_COMPLETED, onCompleted],
+        ];
+        for (const [ev, fn] of subs) EventBus.on(ev, fn);
+        return () => { for (const [ev, fn] of subs) EventBus.removeListener(ev, fn); };
     }, []);
 
     // Typewriter for dialogue
+    const currentLine = dialogue ? (dialogue.lines[dialogue.index] ?? '') : '';
     useEffect(() => {
-        if (!dialogue) { setTyped(''); return; }
-        const line = dialogue.lines[dialogue.index] ?? '';
-        setTyped('');
-        let i = 0;
+        setShown(0);
+        if (!currentLine) return;
         const id = window.setInterval(() => {
-            i += 2;
-            setTyped(line.slice(0, i));
-            if (i >= line.length) window.clearInterval(id);
+            setShown(n => {
+                if (n + 2 >= currentLine.length) window.clearInterval(id);
+                return Math.min(n + 2, currentLine.length);
+            });
         }, 18);
         return () => window.clearInterval(id);
-    }, [dialogue?.index, dialogue?.speaker]);
+    }, [currentLine, dialogue?.index]);
 
-    const advance = () => EventBus.emit(EV.DIALOGUE_ADVANCE);
-    const begin = () => EventBus.emit('begin-journey');
+    /** First press finishes the typing; the next one moves to the next line. */
+    const advance = () => {
+        if (shown < currentLine.length) setShown(currentLine.length);
+        else EventBus.emit(EV.DIALOGUE_ADVANCE);
+    };
+    const resetHud = () => {
+        setItems([]); setDialogue(null); setSpirit(false); setSpiritUnlocked(false);
+        setShowJournal(false); setHint(null);
+    };
+    const begin = (mode: BeginPayload['mode']) => {
+        resetHud();
+        EventBus.emit(EV.BEGIN_JOURNEY, { mode } satisfies BeginPayload);
+    };
     const togglePause = () => EventBus.emit(EV.TOGGLE_PAUSE);
-    const restart = () => { setItems([]); setDialogue(null); EventBus.emit(EV.RESTART_GAME); };
-    const toggleSpirit = () => EventBus.emit('spirit-toggle');
+    const restart = () => { resetHud(); EventBus.emit(EV.RESTART_GAME); };
+    const toggleSpirit = () => EventBus.emit(EV.SPIRIT_TOGGLE_REQUEST);
     const toggleMute = () => {
         setMuted(m => {
             const g = phaserRef.current?.game;
@@ -154,25 +175,25 @@ export default function App() {
         });
     };
 
-    // Keyboard: Space/Enter advance dialogue (ESC handled in scene)
+    // Keyboard: Space / Enter / E advance dialogue (ESC is handled in the scene).
     useEffect(() => {
         const onKey = (e: KeyboardEvent) => {
-            if (phase === 'DIALOGUE' && (e.code === 'Space' || e.code === 'Enter')) {
+            if (phase === 'DIALOGUE' && !e.repeat && (e.code === 'Space' || e.code === 'Enter' || e.code === 'KeyE')) {
                 e.preventDefault();
                 advance();
             }
         };
         window.addEventListener('keydown', onKey);
         return () => window.removeEventListener('keydown', onKey);
-    }, [phase]);
+    });
 
-    const setTouch = (k: 'left' | 'right' | 'jump', v: boolean) => {
+    const setTouch = (k: keyof TouchPayload, v: boolean) => {
         touchRef.current[k] = v;
-        EventBus.emit('touch-input', { ...touchRef.current });
+        EventBus.emit(EV.TOUCH_INPUT, { ...touchRef.current });
     };
 
-    const playing = phase === 'PLAYING' || phase === 'DIALOGUE' || phase === 'PAUSED';
-    const dialogueLine = dialogue ? (typed || dialogue.lines[dialogue.index] || '') : '';
+    const playing = phase === 'PLAYING' || phase === 'DIALOGUE' || phase === 'PAUSED' || phase === 'CUTSCENE';
+    const dialogueLine = currentLine.slice(0, shown);
 
     return (
         <div id="app">
@@ -193,7 +214,14 @@ export default function App() {
                             sacred Iroko grove. Walk, speak, gather relics, and awaken
                             <em> Spirit Sight</em> to see what the living have forgotten.
                         </p>
-                        <button className="btn btn-primary" onClick={begin}>Begin Journey</button>
+                        {canContinue ? (
+                            <div className="btn-row">
+                                <button className="btn btn-primary" onClick={() => begin('continue')}>Continue Journey</button>
+                                <button className="btn" onClick={() => begin('new')}>New Journey</button>
+                            </div>
+                        ) : (
+                            <button className="btn btn-primary" onClick={() => begin('new')}>Begin Journey</button>
+                        )}
                         <div className="controls-card">
                             <h3>Controls</h3>
                             <div className="controls-grid">
@@ -212,13 +240,15 @@ export default function App() {
                 {playing && (
                     <>
                         <div className="topbar">
-                            <div className="amulet" data-spirit={spirit ? 'true' : 'false'} onClick={toggleSpirit} title="Toggle Spirit Sight (Q)">
-                                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                    <circle cx="12" cy="12" r="4" />
-                                    <path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1" />
-                                </svg>
-                                <span>{spirit ? 'Spirit World' : 'Living World'} <kbd>Q</kbd></span>
-                            </div>
+                            {spiritUnlocked && (
+                                <div className="amulet" data-spirit={spirit ? 'true' : 'false'} onClick={toggleSpirit} title="Toggle Spirit Sight (Q)">
+                                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                        <circle cx="12" cy="12" r="4" />
+                                        <path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1" />
+                                    </svg>
+                                    <span>{spirit ? 'Spirit World' : 'Living World'} <kbd>Q</kbd></span>
+                                </div>
+                            )}
                             <div className="spacer" />
                             <button className="icon-btn" onClick={() => setShowJournal(j => !j)} title="Quest journal">
                                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -304,10 +334,12 @@ export default function App() {
                                 <button className="tc-btn tc-jump" onPointerDown={() => setTouch('jump', true)} onPointerUp={() => setTouch('jump', false)} onPointerLeave={() => setTouch('jump', false)}>
                                     <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 19V5M6 11l6-6 6 6" /></svg>
                                 </button>
-                                <button className="tc-btn" onClick={toggleSpirit} title="Spirit Sight">
-                                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="4" /><path d="M12 3v3M12 18v3M3 12h3M18 12h3" /></svg>
-                                </button>
-                                <button className="tc-btn" onClick={() => EventBus.emit('interact')}>
+                                {spiritUnlocked && (
+                                    <button className="tc-btn" onClick={toggleSpirit} title="Spirit Sight">
+                                        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="4" /><path d="M12 3v3M12 18v3M3 12h3M18 12h3" /></svg>
+                                    </button>
+                                )}
+                                <button className="tc-btn" onClick={() => EventBus.emit(EV.INTERACT_REQUEST)}>
                                     <span style={{ fontWeight: 700 }}>E</span>
                                 </button>
                             </div>
@@ -324,12 +356,13 @@ export default function App() {
                                         {items.length === 0 && <p>None yet.</p>}
                                         {items.map(it => <p key={it.id}><Icon name={it.icon} /> {it.name} — <em>{it.description}</em></p>)}
                                         <h3>Current Task</h3>
-                                        <p>Follow Mbe&rsquo;s counsel: reach the Ancient Alusi Shrine beyond the Sacred Iroko Grove.</p>
+                                        <p>{objective}</p>
+                                        <p className="pause-sub">Progress is saved automatically at checkpoints.</p>
                                     </div>
                                     <div className="btn-row">
                                         <button className="btn btn-primary" onClick={togglePause}>Resume</button>
                                         <button className="btn" onClick={toggleMute}>{muted ? 'Unmute' : 'Mute'}</button>
-                                        <button className="btn" onClick={restart}>Restart</button>
+                                        <button className="btn" onClick={restart}>Start Over</button>
                                     </div>
                                 </div>
                             </div>
@@ -341,6 +374,8 @@ export default function App() {
                                 <div className="panel" onClick={e => e.stopPropagation()}>
                                     <h2>Quest Journal</h2>
                                     <div className="journal-list">
+                                        <h3>Current Task</h3>
+                                        <p>{objective}</p>
                                         <h3>Relics Gathered</h3>
                                         {items.length === 0 && <p>None yet — explore the village and grove.</p>}
                                         {items.map(it => <p key={it.id}><Icon name={it.icon} /> {it.name} — <em>{it.description}</em></p>)}
