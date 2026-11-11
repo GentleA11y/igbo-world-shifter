@@ -7,11 +7,10 @@ export type GamePhase =
     | "MENU"
     | "PLAYING"
     | "DIALOGUE"
+    | "CUTSCENE"
     | "PAUSED"
     | "VISION_ENDING"
     | "FINISHED";
-
-export interface LeaderboardEntry { name: string; score: number; date: string; }
 
 export interface DialoguePayload {
     speaker: string;
@@ -29,25 +28,45 @@ export interface ItemPayload {
 
 export interface LocationPayload { name: string; subtitle: string; }
 
+/** Sent with EV.SPIRIT_TOGGLED. */
+export interface SpiritPayload { active: boolean; unlocked: boolean; hint?: string; }
+
+/** Sent with EV.BEGIN_JOURNEY: start fresh or resume the saved game. */
+export interface BeginPayload { mode: 'new' | 'continue'; }
+
+/** Held-button state from the on-screen touch controls. */
+export interface TouchPayload { left?: boolean; right?: boolean; jump?: boolean; }
+
 // ---------------------------------------------------------------------------
 // EventBus event names (single source of truth — scene + App.tsx import these)
 // ---------------------------------------------------------------------------
 export const EV = {
+    // scene -> React
     PHASE_CHANGED: "phase-changed",
     SCENE_READY: "current-scene-ready",
     DIALOGUE_START: "dialogue-start",
-    DIALOGUE_ADVANCE: "dialogue-advance",
+    /** Payload: index of the dialogue line now showing. */
+    DIALOGUE_STEP: "dialogue-step",
     SPIRIT_TOGGLED: "spirit-sight-toggled",
     ITEM_COLLECTED: "item-collected",
     LOCATION_ENTERED: "location-entered",
+    OBJECTIVE_CHANGED: "objective-changed",
     GAME_COMPLETED: "game-completed",
+    // React -> scene
+    BEGIN_JOURNEY: "begin-journey",
+    DIALOGUE_ADVANCE: "dialogue-advance",
     TOGGLE_PAUSE: "toggle-pause",
     RESTART_GAME: "restart-game",
+    SPIRIT_TOGGLE_REQUEST: "spirit-toggle",
+    INTERACT_REQUEST: "interact",
+    TOUCH_INPUT: "touch-input",
 } as const;
 
 // ---------------------------------------------------------------------------
 // World constants
 // ---------------------------------------------------------------------------
+export const GAME_WIDTH = 960;
+export const GAME_HEIGHT = 540;
 export const WORLD_W = 3840;
 export const WORLD_H = 540;
 export const GRAVITY_Y = 800;
@@ -78,112 +97,3 @@ export const COLORS = {
     TEXT: "#ffffff",
 } as const;
 
-// ---------------------------------------------------------------------------
-// Dialogue scripts
-// ---------------------------------------------------------------------------
-export const DIALOGUES: Record<string, DialoguePayload> = {
-    mbe: {
-        speaker: "Mbe the Tortoise",
-        avatarKey: "mbe",
-        onComplete: "mbe-met",
-        text: [
-            "Ah, little Chima! You wander far from your mother's hearth.",
-            "The crickets have stopped their evening songs in the Sacred Iroko Grove. Do you hear it? Even the river has forgotten its rhythm.",
-            "The boundary between what breathes and what remembers has grown thin.",
-            "Go, see what sleeps beneath the ancient stones. And Chima — carry your eyes open. Some paths only appear to those who look twice.",
-        ],
-    },
-    pillar: {
-        speaker: "Whispering Okpesi Stone",
-        avatarKey: "spirit",
-        onComplete: "pillar-touched",
-        text: [
-            "The carved pillar is cold... then warm... then it hums against your palm.",
-            "Ancestral voices rise like incense: 'See with the eyes of those who came before.'",
-            "SPIRIT SIGHT awakened — press Q (or the Talisman button) to shift between the Living World and the Spirit World.",
-        ],
-    },
-    bell: {
-        speaker: "Ogene Spirit Bell",
-        avatarKey: "spirit",
-        onComplete: "bell-rang",
-        text: [
-            "The bronze ogene bell hangs in the twilight, green with age and glowing with nzu-white light.",
-            "You strike it. The note rolls through the grove like a river finding the sea.",
-            "The spirit barrier unravels... the path to the Alusi Shrine is open.",
-        ],
-    },
-    shrine: {
-        speaker: "Chima",
-        avatarKey: "chima",
-        onComplete: "shrine-touched",
-        text: [
-            "The altar stones are older than the village, older than the Iroko itself.",
-            "Something is waking beneath them...",
-        ],
-    },
-    redmask: {
-        speaker: "The Red Mask",
-        avatarKey: "mask",
-        onComplete: "mask-spoke",
-        text: [
-            "CHILD OF THE RED EARTH... you walk where footsteps were long erased.",
-            "He who threw away his name is stirring in the deep dark.",
-            "Remember, child. What is remembered lives.",
-        ],
-    },
-    cowrie: {
-        speaker: "Narration",
-        avatarKey: "spirit",
-        text: [
-            "An ancient cowrie shell — currency of the old markets, eye of the sea. You tuck it into your wrap.",
-        ],
-    },
-    ofo: {
-        speaker: "Narration",
-        avatarKey: "spirit",
-        text: [
-            "A carved fragment of an Ofo staff — the sacred sign of truth and authority. It thrums faintly in your hand.",
-        ],
-    },
-    seed: {
-        speaker: "Narration",
-        avatarKey: "spirit",
-        text: [
-            "A sacred kola seed, five-lobed like an open hand. The ancestors always break kola before hard journeys.",
-        ],
-    },
-    barn: {
-        speaker: "Narration",
-        avatarKey: "chima",
-        text: [
-            "The yam barn stands heavy with harvest. Good yams mean good fortunes — and good stories.",
-        ],
-    },
-    hearth: {
-        speaker: "Narration",
-        avatarKey: "chima",
-        text: [
-            "The communal hearth still glows. Smoke carries palm-soup scent into the evening air.",
-        ],
-    },
-    totem: {
-        speaker: "Narration",
-        avatarKey: "chima",
-        text: [
-            "A carved totem post watches the village path — three stacked heads, a bird crest raised against the sky.",
-        ],
-    },
-};
-
-export const ENDING_NOTE = "What you have forgotten is waking.";
-
-export const GLOSSARY: { term: string; def: string }[] = [
-    { term: "Mbe", def: "The tortoise — trickster and sage of Igbo folklore, keeper of clever tales." },
-    { term: "Mmanwu", def: "Ancestral masquerade; a spirit made visible to the living through mask and raffia." },
-    { term: "Nzu", def: "Sacred white chalk of purity, welcome and spiritual power." },
-    { term: "Ofo", def: "A staff symbolizing truth, justice and the authority of the ancestors." },
-    { term: "Ogene", def: "A bronze gong whose voice calls the community — and the spirits — to attention." },
-    { term: "Alusi", def: "Shrines and deities of the land, guardians of groves, rivers and crossroads." },
-    { term: "Uli", def: "Traditional geometric body and wall mural art, drawn in swift confident curves." },
-];
