@@ -38,6 +38,22 @@ const StartGame = (parent: string) => {
 
 interface InteractTarget { id: string; label: string; kind: string; }
 
+/** Sound key -> file name inside src/assets/audio/. All optional. */
+const AUDIO_FILES: Record<string, string> = {
+    bgm: 'bgm_chill.mp3',
+    sfx_button: 'sfx_button.mp3',
+    sfx_jump: 'sfx_jump.mp3',
+    sfx_powerup: 'sfx_powerup.mp3',
+    sfx_collect: 'sfx_collect.mp3',
+    sfx_win: 'sfx_win.mp3',
+};
+
+// Vite finds whichever audio files actually exist at build time, so missing
+// files are never requested (no 404s or decode errors).
+const AUDIO_URLS = import.meta.glob('../assets/audio/*.mp3', {
+    eager: true, query: '?url', import: 'default',
+}) as Record<string, string>;
+
 // ---------------------------------------------------------------------------
 // The Game scene — full narrative world
 // ---------------------------------------------------------------------------
@@ -66,7 +82,7 @@ export class Game extends Scene {
     private groundTiles!: Phaser.GameObjects.Image;
     private groundSpiritTiles!: Phaser.GameObjects.Image;
     private mushroomTiles: Phaser.GameObjects.Image[] = [];
-    private bgm!: Phaser.Sound.BaseSound;
+    private bgm?: Phaser.Sound.BaseSound;
 
     private phase: GamePhase = 'MENU';
     private spiritSight = false;
@@ -85,14 +101,12 @@ export class Game extends Scene {
 
     // ---------------------------------------------------------------
     preload() {
-    this.load.audio("bgm","assets/audio/bgm_chill.mp3");
-    this.load.audio("sfx_button","assets/audio/sfx_button.mp3");
-    this.load.audio("sfx_jump","assets/audio/sfx_jump.mp3");
-    this.load.audio("sfx_powerup","assets/audio/sfx_powerup.mp3");
-    this.load.audio("sfx_collect","assets/audio/sfx_collect.mp3");
-    this.load.audio("sfx_win","assets/audio/sfx_win.mp3");
-        // Audio and fx image assets are not bundled in this sandbox.
-        // safePlay() guards audio; fx textures are generated in create().
+        // Optional audio: drop matching .mp3 files into src/assets/audio/.
+        // Any file that is missing is skipped and the game runs silently.
+        for (const [key, file] of Object.entries(AUDIO_FILES)) {
+            const url = AUDIO_URLS[`../assets/audio/${file}`];
+            if (url) this.load.audio(key, url);
+        }
     }
 
     // ---------------------------------------------------------------
@@ -138,10 +152,10 @@ export class Game extends Scene {
 
         // Ground colliders split around the chasm (x 1900 - 2140)
         const gL = this.physics.add.staticImage(950, GROUND_TOP + 35, '__body');
-        gL.setVisible(false); gL.setSize(1900, 70).refreshBody();
+        gL.setVisible(false); setStaticBodySize(gL, 1900, 70);
         this.platforms.add(gL);
         const gR = this.physics.add.staticImage(2990, GROUND_TOP + 35, '__body');
-        gR.setVisible(false); gR.setSize(1700, 70).refreshBody();
+        gR.setVisible(false); setStaticBodySize(gR, 1700, 70);
         this.platforms.add(gR);
 
         // ---- Area 1: The Village of Umueze (x 0-1200) ----
@@ -155,7 +169,7 @@ export class Game extends Scene {
 
         // Mbe the tortoise on a carved log
         const log = this.physics.add.staticImage(340, GROUND_TOP - 10, '__body');
-        log.setVisible(false); log.setSize(90, 20).refreshBody();
+        log.setVisible(false); setStaticBodySize(log, 90, 20);
         this.platforms.add(log);
         this.add.image(340, GROUND_TOP - 30, 'mbe').setDepth(6);
         this.add.text(340, GROUND_TOP - 72, 'Mbe', {
@@ -195,7 +209,7 @@ export class Game extends Scene {
 
         // Thorn wall blocking the path at x=2200 (dispelled by the ogene bell)
         const thorn = this.physics.add.staticImage(2200, GROUND_TOP - 60, '__body');
-        thorn.setVisible(false); thorn.setSize(20, 120).refreshBody();
+        thorn.setVisible(false); setStaticBodySize(thorn, 20, 120);
         this.platforms.add(thorn);
         this.thornWalls.push(thorn);
         for (let i = 0; i < 5; i++) {
@@ -204,13 +218,13 @@ export class Game extends Scene {
 
         // Spirit root platforms over the chasm (solid only in Spirit Sight)
         const root1 = this.physics.add.staticImage(1920, GROUND_TOP - 20, 'spirit_root');
-        root1.setSize(160, 26).refreshBody();
+        setStaticBodySize(root1, 160, 26);
         this.spiritPlatforms.add(root1);
         const root2 = this.physics.add.staticImage(2060, GROUND_TOP - 55, 'spirit_root');
-        root2.setSize(160, 26).refreshBody();
+        setStaticBodySize(root2, 160, 26);
         this.spiritPlatforms.add(root2);
         const root3 = this.physics.add.staticImage(2185, GROUND_TOP - 20, 'spirit_root');
-        root3.setSize(140, 26).refreshBody();
+        setStaticBodySize(root3, 140, 26);
         this.spiritPlatforms.add(root3);
 
         // Spirit barrier at x=2400 (solid in Spirit Sight until the bell is rung)
@@ -350,7 +364,13 @@ export class Game extends Scene {
         EventBus.on('interact', this.tryInteract, this);
         EventBus.on('toggle-pause', this.handlePauseToggle, this);
 
-        this.events.once('shutdown', () => {
+        // Clean up on shutdown AND destroy: game.destroy() (React StrictMode
+        // remount, hot reload) fires 'destroy' only, and a stale scene left
+        // listening on the shared EventBus crashes on the next event.
+        let cleanedUp = false;
+        const cleanup = () => {
+            if (cleanedUp) return;
+            cleanedUp = true;
             this.time.removeAllEvents();
             this.tweens.killAll();
             this.input.keyboard?.removeAllListeners();
@@ -362,7 +382,9 @@ export class Game extends Scene {
             EventBus.off('interact', this.tryInteract, this);
             EventBus.off('toggle-pause', this.handlePauseToggle, this);
             if (this.bgm) this.bgm.stop();
-        });
+        };
+        this.events.once('shutdown', cleanup);
+        this.events.once('destroy', cleanup);
 
         this.setPhase('MENU');
         EventBus.emit(EV.SCENE_READY, this);
@@ -399,9 +421,7 @@ export class Game extends Scene {
         this.player.setVelocity(0, 0);
         this.player.setTexture('chima_idle');
         this.safePlay('sfx_button');
-        if (this.bgm) this.bgm.stop();
-        this.bgm = this.cache.audio.exists('bgm') ? this.sound.add('bgm', { loop: true, volume: 0.35 }) : this.sound.add('bgm');
-        this.bgm.play();
+        this.startMusic();
         this.emitLocation(120);
     }
 
@@ -431,8 +451,14 @@ export class Game extends Scene {
         this.setPhase('PLAYING');
         if (this.physics.world.isPaused) this.physics.world.resume();
         this.tweens.resumeAll();
-        if (this.bgm) { this.bgm.stop(); }
-        this.bgm = this.cache.audio.exists('bgm') ? this.sound.add('bgm', { loop: true, volume: 0.35 }) : this.sound.add('bgm');
+        this.startMusic();
+    }
+
+    /** (Re)start background music. Does nothing if the music file is missing. */
+    private startMusic() {
+        if (this.bgm) { this.bgm.stop(); this.bgm.destroy(); this.bgm = undefined; }
+        if (!this.cache.audio.exists('bgm')) return;
+        this.bgm = this.sound.add('bgm', { loop: true, volume: 0.35 });
         this.bgm.play();
     }
 
@@ -732,3 +758,11 @@ export class Game extends Scene {
 }
 
 export default StartGame;
+/**
+ * Size a static physics body directly. (GameObject.setSize + refreshBody
+ * sizes the body from the texture, so an 8x8 '__body' collider stayed 8x8
+ * and the player fell through the ground.)
+ */
+function setStaticBodySize(obj: Phaser.Physics.Arcade.Image, w: number, h: number) {
+    (obj.body as Phaser.Physics.Arcade.StaticBody).setSize(w, h, true);
+}
